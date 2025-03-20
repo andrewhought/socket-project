@@ -68,4 +68,25 @@ def setup_dht(peer_name, n, year):
 # - If peer-name is not the leader, FAILURE response
 # - Manager may now process any other commands besides "setup-dht"
 def dht_complete(peer_name):
-    return
+    """
+    Handles 'dht-complete' command from the leader peer.
+    - If the sender is the leader, updates the DHT status and allows further operations.
+    - If the sender is not the leader, returns FAILURE.
+    """
+    global dht_ready
+    
+    if peer_name == dht_leader:
+        dht_ready = True  # Mark the DHT as complete
+        return "SUCCESS"
+    else:
+        return "FAILURE"
+
+# Helper Functions
+def is_leader(peer_name):
+    """ Helper function to check if a peer is the DHT leader """
+    return peer_name == dht_leader
+
+def update_dht_status():
+    """ Helper function to mark the DHT as ready """
+    global dht_ready
+    dht_ready = True
