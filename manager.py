@@ -1,24 +1,68 @@
-# - peer-name is alphabetic string of length no greater than 15 characters
-# - On receipt, the manager stores name, IPv4, and ports associated with peer
-# - m-port is for communication between peer and manager
-# - p-port is for communication between peers
-# - Each peer-name can only be registered once
-# - IPv4 does not need to be unique for each peer, ports must be unique
-def register(peer_name, ip, m_port, p_port):
-    return
+from peer import State, Peer
 
-# - n must be greater than or equal to 3
-# - Initiates construction of DHT of size n using data from year YYYY, with peer-name as "Leader"
-# - Command results in FAILURE for the following conditionals:
-#     - peer-name is not registered
-#     - n is not at least 3
-#     - Fewer than n users are registered with the manager
-#     - DHT has already been set up
-# - Manager sets state of peer-name to "Leader" and selects n-1 "Free" users from registered and updates state to "InDHT"
-# - The n peers are given by 3-tuples consisting of peer-name, IPv4, and p-port, "Leader" is the first 3-tuple
-# - After SUCCESS from "setup-dht," manager waits for "dht-complete"
+class DHT():
+    def __init__(self, leader, peers, initialized, year, n):
+        self.leader = leader
+        self.peers = peers
+        self.initialized = initialized
+        self.year = year
+        self.n = n
+
+    def not_registered_check(self, peer_name):
+        return all(peer.name != peer_name for peer in self.peers)
+
+dht = DHT(None, [], False, None, None)
+
+def register(peer_name, ip, m_port, p_port):
+    success = True
+
+    if (len(peer_name) > 15):
+        print("FAILURE")
+        return not success
+    
+    for peer in dht.peers:
+        if (peer.m_port == m_port or peer.p_port == p_port or peer.name == peer_name):
+            print("FAILURE")
+            return not success
+
+    peer = Peer(peer_name, State.Free, ip, m_port, p_port)
+
+    dht.peers.append(peer)
+
+    print(f"Successfully registered {peer_name}")
+    return success
+
 def setup_dht(peer_name, n, year):
-    return
+    success = True
+
+    if (dht.not_registered_check(peer_name)):
+        print("FAILURE")
+        return not success
+
+    if (n < 3 or len(dht.peers) < n or dht.initialized == True):
+        print("FAILURE")
+        return not success
+    
+    dht.n = n
+    dht.year = year
+    
+    for peer in dht.peers:
+        if (peer.name == peer_name):
+            peer.state = State.Leader
+            dht.leader = peer
+
+    leader = dht.leader
+        
+    remaining_peers = [peer for peer in dht.peers if peer.name != leader.name]
+    remaining_peers = remaining_peers[:n - 1]
+
+    for peer in remaining_peers:
+        peer.state = State.InDHT
+
+    dht.initialized = True
+
+    print(f"Successfully set up DHT with leader {peer_name}")
+    return success
 
 # - Receipt of "dht-complete" indicates leader has completed all steps required to set up DHT
 # - If peer-name is not the leader, FAILURE response
