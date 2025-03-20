@@ -1,40 +1,72 @@
 import socket
-from enum import Enum
-
-class State(Enum):
-    Free = 1
-    Leader = 2
-    InDHT = 3
+import json
+import sys
 
 class Peer:
-    def __init__(self, name, state, ip, m_port, p_port):
+    def __init__(self, name, ip, m_port):
         self.name = name
-        self.state = state
         self.ip = ip
         self.m_port = m_port
-        self.p_port = p_port
 
-def send_dht_complete(manager_ip, manager_port, peer_name):
-    """ Sends 'dht-complete' message from the DHT leader to the manager """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    message = f"dht-complete {peer_name}"
-    
-    try:
-        sock.sendto(message.encode(), (manager_ip, manager_port))
-        response, _ = sock.recvfrom(1024)
-        response = response.decode()
-        
-        if response == "SUCCESS":
-            print(f"DHT setup completed successfully by leader {peer_name}.")
+    def register(self, m_socket):
+        message = {
+            "command": "register",
+            "peer": {
+                "name": self.name,
+                "ip": self.ip,
+                "port": self.m_port
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (self.ip, 5000))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
+    def setup_dht(self, m_socket):
+        size = int(input("Size: "))
+        year = int(input("Year: "))
+        message = {
+            "command": "setup",
+            "peer": {
+                "name": self.name,
+                "ip": self.ip,
+                "port": self.m_port
+            },
+            "size": size,
+            "year": year
+        }
+        m_socket.sendto(json.dumps(message).encode(), (self.ip, 5000))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
+    def dht_complete(self, m_socket):
+        message = {"command": "complete"}
+        m_socket.sendto(json.dumps(message).encode(), (self.ip, 5000))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
+def peer():
+    name = input("Peer name: ")
+    ip = "127.0.0.1"
+    m_port = int(sys.argv[1])
+    peer = Peer(name, ip, m_port)
+
+    print(f"{peer.name} started")
+
+    m_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    m_socket.bind((ip, m_port))
+
+    while True:
+        command = input("Enter command (register/setup/complete/exit): ").strip()
+        if (command == "exit"):
+            break
+        elif (command == "register"):
+            peer.register(m_socket)
+        elif (command == "setup"):
+            peer.setup_dht(m_socket)
+        elif (command == "complete"):
+            peer.dht_complete(m_socket)
         else:
-            print(f"DHT completion failed for {peer_name}.")
-    
-    finally:
-        sock.close()
+            print("Invalid")
 
-# Test function to validate dht-complete
-if __name__ == "__main__":
-    manager_ip = "127.0.0.1"  # Localhost for testing
-    manager_port = 5000  # Example port
-    peer_name = "Leader1"  # Replace with actual leader name
-    send_dht_complete(manager_ip, manager_port, peer_name)
+if (__name__ == "__main__"):
+    peer()

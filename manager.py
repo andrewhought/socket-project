@@ -1,92 +1,62 @@
-from peer import State, Peer
+import socket
+import json
 
-class DHT():
-    def __init__(self, leader, peers, initialized, year, n):
-        self.leader = leader
-        self.peers = peers
-        self.initialized = initialized
-        self.year = year
-        self.n = n
+class DHT:
+    def __init__(self):
+        self.peers = []
+        self.leader = None
+        self.initialized = False
+        self.n = None
+        self.year = None
 
-    def not_registered_check(self, peer_name):
-        return all(peer.name != peer_name for peer in self.peers)
+    def register_peer(self, peer):
+        self.peers.insert(0, peer)
+        print(f"Registered peer: {peer}")
 
-dht = DHT(None, [], False, None, None)
+    def setup_dht(self, peer):
+        if (self.n < 3):
+            print("FAILURE: DHT needs to have a size of 3 or greater")
+            return False
+        if (len(self.peers) < self.n):
+            print("FAILURE: Not enough peers to setup DHT")
+            return False
+        self.leader = peer
+        self.initialized = True
+        print(f"DHT setup completed with leader: {self.leader}")
+        return True
 
-def register(peer_name, ip, m_port, p_port):
-    success = True
+def manager():
+    dht = DHT()
+    m_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    m_socket.bind(("127.0.0.1", 5000))
 
-    if (len(peer_name) > 15):
-        print("FAILURE")
-        return not success
-    
-    for peer in dht.peers:
-        if (peer.m_port == m_port or peer.p_port == p_port or peer.name == peer_name):
-            print("FAILURE")
-            return not success
+    print("Manager started")
 
-    peer = Peer(peer_name, State.Free, ip, m_port, p_port)
-
-    dht.peers.append(peer)
-
-    print(f"Successfully registered {peer_name}")
-    return success
-
-def setup_dht(peer_name, n, year):
-    success = True
-
-    if (dht.not_registered_check(peer_name)):
-        print("FAILURE")
-        return not success
-
-    if (n < 3 or len(dht.peers) < n or dht.initialized == True):
-        print("FAILURE")
-        return not success
-    
-    dht.n = n
-    dht.year = year
-    
-    for peer in dht.peers:
-        if (peer.name == peer_name):
-            peer.state = State.Leader
-            dht.leader = peer
-
-    leader = dht.leader
+    while True:
+        data, addr = m_socket.recvfrom(1024)
+        message = json.loads(data.decode())
         
-    remaining_peers = [peer for peer in dht.peers if peer.name != leader.name]
-    remaining_peers = remaining_peers[:n - 1]
+        if (message["command"] == "register"):
+            dht.register_peer(message["peer"])
+            response = {"status": "registered"}
+            m_socket.sendto(json.dumps(response).encode(), addr)
 
-    for peer in remaining_peers:
-        peer.state = State.InDHT
+        elif (message["command"] == "setup"):
+            peer = message["peer"]
+            dht.n = message["size"]
+            dht.year = message["year"]
+            success = dht.setup_dht(peer)
+            response = {"status": "setup", "result": success}
+            m_socket.sendto(json.dumps(response).encode(), addr)
 
-    dht.initialized = True
+        elif (message["command"] == "complete"):
+            if (addr[1] == dht.leader["port"]):
+                print("DHT setup completed by leader")
+                response = {"status": "complete"}
+                m_socket.sendto(json.dumps(response).encode(), addr)
+            else:
+                response = {"status": "FAILURE", "message": "Only the leader can complete the DHT"}
+                m_socket.sendto(json.dumps(response).encode(), addr)
 
-    print(f"Successfully set up DHT with leader {peer_name}")
-    return success
-
-# - Receipt of "dht-complete" indicates leader has completed all steps required to set up DHT
-# - If peer-name is not the leader, FAILURE response
-# - Manager may now process any other commands besides "setup-dht"
-def dht_complete(peer_name):
-    """
-    Handles 'dht-complete' command from the leader peer.
-    - If the sender is the leader, updates the DHT status and allows further operations.
-    - If the sender is not the leader, returns FAILURE.
-    """
-    global dht_ready
-    
-    if peer_name == dht_leader:
-        dht_ready = True  # Mark the DHT as complete
-        return "SUCCESS"
-    else:
-        return "FAILURE"
-
-# Helper Functions
-def is_leader(peer_name):
-    """ Helper function to check if a peer is the DHT leader """
-    return peer_name == dht_leader
-
-def update_dht_status():
-    """ Helper function to mark the DHT as ready """
-    global dht_ready
-    dht_ready = True
+if (__name__ == "__main__"):
+    manager()
