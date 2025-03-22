@@ -46,8 +46,30 @@ def manager():
             dht.n = message["size"]
             dht.year = message["year"]
             success = dht.setup_dht(peer)
-            response = {"status": "setup", "result": success}
-            m_socket.sendto(json.dumps(response).encode(), addr)
+    # If success, gather n 3-tuples: (peerName, ip, port)
+    # For example:
+    if success:
+        # Suppose the FIRST peer in dht.peers is the leader 
+        # followed by the next n-1 in the list. (This is simplistic!)
+        # Weou might want a better random selection or something that truly picks n distinct peers.
+        # For now, let's just take the first n from dht.peers:
+        ring_peers = dht.peers[:dht.n]
+        peer_list = []
+        for p in ring_peers:
+            peer_list.append({
+                "name": p["name"],
+                "ip": p["ip"],
+                "port": p["port"]
+            })
+        response = {
+            "status": "setup",
+            "result": True,
+            "ring_peers": peer_list
+        }
+    else:
+        response = {"status": "setup", "result": False}
+
+    m_socket.sendto(json.dumps(response).encode(), addr)
 
         elif (message["command"] == "complete"):
             if (addr[1] == dht.leader["port"]):
@@ -57,6 +79,23 @@ def manager():
             else:
                 response = {"status": "FAILURE", "message": "Only the leader can complete the DHT"}
                 m_socket.sendto(json.dumps(response).encode(), addr)
+
+elif msg["command"] == "store":
+    record = msg["record"]
+    target_id = msg["target_id"]
+    if this_peer.ring_id == target_id:
+        # store locally
+        print(f"{this_peer.name} storing event_id={record['event_id']} locally!")
+    else:
+        # forward to next neighbor
+        forward_msg = {
+            "command": "store",
+            "record": record,
+            "target_id": target_id
+        }
+        p_socket.sendto(json.dumps(forward_msg).encode(),
+                        (this_peer.right_neighbor_ip, this_peer.right_neighbor_port))
+        print(f"{this_peer.name} forwarding 'store' for event {record['event_id']} to ring neighbor.")
 
 if (__name__ == "__main__"):
     manager()
