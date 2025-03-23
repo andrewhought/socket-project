@@ -1,101 +1,165 @@
+import argparse
 import socket
 import json
+import sys
+
 
 class DHT:
     def __init__(self):
-        self.peers = []
+        self.peers = []  # List of all registered peers
+        self.dht_peers = []  # Peers currently in the DHT
         self.leader = None
         self.initialized = False
         self.n = None
         self.year = None
 
     def register_peer(self, peer):
-        self.peers.insert(0, peer)
-        print(f"Registered peer: {peer}")
+        # Check if peer name already exists
+        for p in self.peers:
+            if p["name"] == peer["name"]:
+                return False, "Peer name already registered"
 
-    def setup_dht(self, peer):
-        if (self.n < 3):
-            print("FAILURE: DHT needs to have a size of 3 or greater")
-            return False
-        if (len(self.peers) < self.n):
-            print("FAILURE: Not enough peers to setup DHT")
-            return False
-        self.leader = peer
+        # Check if ports are already in use by another peer on the same IP
+        for p in self.peers:
+            if p["ip"] == peer["ip"]:
+                if p["m_port"] == peer["m_port"] or p["p_port"] == peer["p_port"]:
+                    return False, "Port already in use"
+
+        # If all checks pass, register the peer
+        self.peers.append(peer)
+        print(f"Registered peer: {peer['name']} at {peer['ip']}:{peer['m_port']}/{peer['p_port']}")
+        return True, "SUCCESS"
+
+    def setup_dht(self, peer_name, size, year):
+        # Check if DHT already initialized
+        if self.initialized:
+            return False, "DHT already set up"
+
+        # Check if size is at least 3
+        if size < 3:
+            return False, "DHT size must be at least 3"
+
+        # Check if enough peers are registered
+        if len(self.peers) < size:
+            return False, "Not enough peers registered"
+
+        # Find the requesting peer
+        leader_peer = None
+        for p in self.peers:
+            if p["name"] == peer_name:
+                leader_peer = p
+                break
+
+        if not leader_peer:
+            return False, "Requesting peer not found"
+
+        # Set up DHT
+        self.n = size
+        self.year = year
+        self.leader = leader_peer
         self.initialized = True
-        print(f"DHT setup completed with leader: {self.leader}")
-        return True
 
-def manager():
+        # Select n-1 random peers (simplistic approach: take first n peers including leader)
+        # In a real implementation, you would want to randomly select from free peers
+        self.dht_peers = [leader_peer]
+
+        count = 1
+        for p in self.peers:
+            if p["name"] != leader_peer["name"] and count < size:
+                self.dht_peers.append(p)
+                count += 1
+                if count >= size:
+                    break
+
+        print(f"DHT setup with size {size} for year {year}, leader: {leader_peer['name']}")
+        print(self.dht_peers)
+        return True, self.dht_peers
+
+
+def manager_main():
+
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description="Start a DHT manager")
+    parser.add_argument("--port", type=int, default=30000, help="Port for manager communication (default: 30000)")
+    parser.add_argument("--debug", action="store_true", help="Run in debug mode with localhost")
+
+    # Parse arguments
+    args = parser.parse_args()
+
     dht = DHT()
     m_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    m_socket.bind(("127.0.0.1", 5000))
 
-    print("Manager started")
+    if args.debug:
+        ip_addr = "127.0.0.1"
+    else:
+        ip_addr = socket.gethostbyname(socket.gethostname())
+
+    port = args.port
+    m_socket.bind((ip_addr, port))
+
+    print(f"Manager started at {ip_addr}:{port}")
 
     while True:
         data, addr = m_socket.recvfrom(1024)
         message = json.loads(data.decode())
-        
-        if (message["command"] == "register"):
-            dht.register_peer(message["peer"])
-            response = {"status": "registered"}
+        print(message)
+        command = message["command"]
+
+        if command == "register":
+            peer = message["peer"]
+            success, msg = dht.register_peer(peer)
+            if success:
+                response = {"status": "SUCCESS", "message": msg}
+            else:
+                response = {"status": "FAILURE", "message": msg}
             m_socket.sendto(json.dumps(response).encode(), addr)
 
-        elif (message["command"] == "setup"):
+        elif command == "setup-dht":
             peer = message["peer"]
-            dht.n = message["size"]
-            dht.year = message["year"]
-            success = dht.setup_dht(peer)
-    # If success, gather n 3-tuples: (peerName, ip, port)
-    # For example:
-    if success:
-        # Suppose the FIRST peer in dht.peers is the leader 
-        # followed by the next n-1 in the list. (This is simplistic!)
-        # Weou might want a better random selection or something that truly picks n distinct peers.
-        # For now, let's just take the first n from dht.peers:
-        ring_peers = dht.peers[:dht.n]
-        peer_list = []
-        for p in ring_peers:
-            peer_list.append({
-                "name": p["name"],
-                "ip": p["ip"],
-                "port": p["port"]
-            })
-        response = {
-            "status": "setup",
-            "result": True,
-            "ring_peers": peer_list
-        }
-    else:
-        response = {"status": "setup", "result": False}
+            size = message["size"]
+            year = message["year"]
 
-    m_socket.sendto(json.dumps(response).encode(), addr)
+            success, result = dht.setup_dht(peer["name"], size, year)
 
-        elif (message["command"] == "complete"):
-            if (addr[1] == dht.leader["port"]):
+            if success:
+                # Convert DHT peers to the format expected by client
+                ring_peers = []
+                for p in result:
+                    ring_peers.append({
+                        "name": p["name"],
+                        "ip": p["ip"],
+                        "p_port": p["p_port"]  # Note: using p_port for peer-to-peer communication
+                    })
+
+                response = {
+                    "status": "SUCCESS",
+                    "result": True,
+                    "ring_peers": ring_peers
+                }
+            else:
+                response = {
+                    "status": "FAILURE",
+                    "result": False,
+                    "message": result
+                }
+
+            m_socket.sendto(json.dumps(response).encode(), addr)
+
+        elif command == "dht-complete":
+            # Check if the request is from the leader
+            if dht.leader and addr[0] == dht.leader["ip"] and addr[1] == dht.leader["m_port"]:
                 print("DHT setup completed by leader")
-                response = {"status": "complete"}
-                m_socket.sendto(json.dumps(response).encode(), addr)
+                dht.setup_complete = True
+                response = {"status": "SUCCESS"}
             else:
                 response = {"status": "FAILURE", "message": "Only the leader can complete the DHT"}
-                m_socket.sendto(json.dumps(response).encode(), addr)
 
-elif msg["command"] == "store":
-    record = msg["record"]
-    target_id = msg["target_id"]
-    if this_peer.ring_id == target_id:
-        # store locally
-        print(f"{this_peer.name} storing event_id={record['event_id']} locally!")
-    else:
-        # forward to next neighbor
-        forward_msg = {
-            "command": "store",
-            "record": record,
-            "target_id": target_id
-        }
-        p_socket.sendto(json.dumps(forward_msg).encode(),
-                        (this_peer.right_neighbor_ip, this_peer.right_neighbor_port))
-        print(f"{this_peer.name} forwarding 'store' for event {record['event_id']} to ring neighbor.")
+            m_socket.sendto(json.dumps(response).encode(), addr)
 
-if (__name__ == "__main__"):
-    manager()
+        else:
+            response = {"status": "FAILURE", "message": "Unknown command"}
+            m_socket.sendto(json.dumps(response).encode(), addr)
+
+
+if __name__ == "__main__":
+    manager_main()
