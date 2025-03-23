@@ -2,6 +2,9 @@ import argparse
 import socket
 import json
 import sys
+from time import sleep
+
+KEEP_RUNNING = True
 
 
 class DHT:
@@ -77,7 +80,6 @@ class DHT:
 
 
 def manager_main():
-
     # Set up argument parser
     parser = argparse.ArgumentParser(description="Start a DHT manager")
     parser.add_argument("--port", type=int, default=30000, help="Port for manager communication (default: 30000)")
@@ -99,7 +101,7 @@ def manager_main():
 
     print(f"Manager started at {ip_addr}:{port}")
 
-    while True:
+    while KEEP_RUNNING:
         data, addr = m_socket.recvfrom(1024)
         message = json.loads(data.decode())
         print(message)
@@ -162,4 +164,11 @@ def manager_main():
 
 
 if __name__ == "__main__":
-    manager_main()
+    try:
+        manager_main()
+    except KeyboardInterrupt:
+        print("Shutting down manager")
+    finally:
+        KEEP_RUNNING = False
+        sleep(1)
+        print('finish cleaning')

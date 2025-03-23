@@ -14,6 +14,8 @@ MANAGER_PORT: int = 30000
 MANAGER_IP_ADDR: str = "127.0.0.1"  # testing at general.asu.edu, this need to be changed
 BIG_PRIME = 7017224779
 
+KEEP_RUNNING = True  # Flag to control all the while loop
+
 
 class Peer:
     def __init__(self, name, ip, m_port, p_port):
@@ -142,7 +144,7 @@ def listen_for_peers(peer, p_socket):
     p_socket.listen(5)  # Start listening for incoming connections
     print(f"Listening for peer connections on port {peer.p_port}")
 
-    while True:
+    while KEEP_RUNNING:
         try:
             # Accept a connection if it's a new peer connection
             connection, addr = p_socket.accept()
@@ -159,14 +161,14 @@ def listen_for_peers(peer, p_socket):
         except Exception as e:
             print(f"Error accepting connection: {e}")
 
-
+    p_socket.close()
 def handle_peer_connection(peer, connection, addr):
     """Handle a single peer connection in its own thread."""
     received_chunks = {}
     buffer = b""
 
     try:
-        while True:
+        while KEEP_RUNNING:
             data = connection.recv(4096)  # Larger buffer for TCP
             if not data:
                 break  # Connection was closed by peer
@@ -266,9 +268,8 @@ def handle_peer_connection(peer, connection, addr):
         connection.close()
         print(f"Connection with {addr} closed")
 
-
 def handle_user_commands(peer, m_socket):
-    while True:
+    while KEEP_RUNNING:
         command = input("\nEnter command (register/setup-dht/dht-complete/exit): ").strip()
         if command == "exit":
             break
@@ -289,28 +290,36 @@ def peer_main():
     parser.add_argument("--debug", action="store_true", help="Run in debug mode with localhost")
     args = parser.parse_args()
 
-    name = input("Peer name: ")
-    ip_addr = "127.0.0.1" if args.debug else socket.gethostbyname(socket.gethostname())
+    try:
+        name = input("Peer name: ")
+        ip_addr = "127.0.0.1" if args.debug else socket.gethostbyname(socket.gethostname())
 
-    peer = Peer(name, ip_addr, args.m_port, args.p_port)
-    print(f"{peer.name} started")
+        peer = Peer(name, ip_addr, args.m_port, args.p_port)
+        print(f"{peer.name} started")
 
-    # UDP socket for manager communication
-    m_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    m_socket.bind((ip_addr, args.m_port))
+        # UDP socket for manager communication
+        m_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        m_socket.bind((ip_addr, args.m_port))
 
-    # TCP socket for peer-to-peer communication
-    p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    p_socket.bind((ip_addr, args.p_port))
+        # TCP socket for peer-to-peer communication
+        p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        p_socket.bind((ip_addr, args.p_port))
 
-    listen_thread = threading.Thread(target=listen_for_peers, args=(peer, p_socket), daemon=True)
-    listen_thread.start()
+        listen_thread = threading.Thread(target=listen_for_peers, args=(peer, p_socket), daemon=True)
+        listen_thread.start()
 
-    handle_user_commands(peer, m_socket)
+        handle_user_commands(peer, m_socket)
 
-    print("Shutting down peer.")
-    p_socket.close()
-    m_socket.close()
+        print("Shutting down peer.")
+        p_socket.close()
+        m_socket.close()
+
+    except KeyboardInterrupt:
+        print("User signal down the program.")
+    finally:
+        KEEP_RUNNING = False
+        sleep(1)
+        print('finish cleaning')
 
 
 if __name__ == "__main__":
