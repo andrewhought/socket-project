@@ -1,10 +1,9 @@
 import socket
 import json
 import pandas as pd
-import zlib  # Compression library
+import zlib
 
-MAX_PACKET_SIZE = 65536  # TCP can handle larger packets than UDP
-
+MAX_PACKET_SIZE = 65536
 
 def send_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peers):
     # Create a TCP socket for peer-to-peer communication
@@ -64,3 +63,4 @@ def send_peer_command(target_ip, target_port, data, year):
         print(f"Error sending peer command: {e}")
     finally:
         p_socket.close()
+        

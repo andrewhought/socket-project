@@ -1,16 +1,17 @@
 import argparse
 import socket
 import json
-import sys
+
 from time import sleep
 
 KEEP_RUNNING = True
 
-
 class DHT:
     def __init__(self):
-        self.peers = []  # List of all registered peers
-        self.dht_peers = []  # Peers currently in the DHT
+        # List of all registered peers
+        self.peers = []
+        # Peers currently in the DHT
+        self.dht_peers = []
         self.leader = None
         self.initialized = False
         self.n = None
@@ -62,8 +63,7 @@ class DHT:
         self.leader = leader_peer
         self.initialized = True
 
-        # Select n-1 random peers (simplistic approach: take first n peers including leader)
-        # In a real implementation, you would want to randomly select from free peers
+        # Select n-1 random peers
         self.dht_peers = [leader_peer]
 
         count = 1
@@ -80,12 +80,10 @@ class DHT:
 
 
 def manager_main():
-    # Set up argument parser
     parser = argparse.ArgumentParser(description="Start a DHT manager")
     parser.add_argument("--port", type=int, default=30000, help="Port for manager communication (default: 30000)")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode with localhost")
 
-    # Parse arguments
     args = parser.parse_args()
 
     dht = DHT()
@@ -130,7 +128,7 @@ def manager_main():
                     ring_peers.append({
                         "name": p["name"],
                         "ip": p["ip"],
-                        "p_port": p["p_port"]  # Note: using p_port for peer-to-peer communication
+                        "p_port": p["p_port"]
                     })
 
                 response = {
@@ -171,4 +169,4 @@ if __name__ == "__main__":
     finally:
         KEEP_RUNNING = False
         sleep(1)
-        print('finish cleaning')
+        print("Finish cleaning")
