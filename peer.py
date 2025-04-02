@@ -6,7 +6,7 @@ import pandas as pd
 import argparse
 
 from time import sleep
-from utils import send_set_id_command, send_peer_command
+from utils import send_peer_set_id_command, send_peer_storm_data, send_peer_tear_down_command
 
 MANAGER_PORT: int = 30000
 # TODO: Testing at general.asu.edu
@@ -15,6 +15,7 @@ BIG_PRIME = 7017224779
 
 # Flag to control while loops
 KEEP_RUNNING = True
+
 
 class Peer:
     def __init__(self, name, ip, m_port, p_port):
@@ -32,6 +33,9 @@ class Peer:
         self.right_neighbor_port = None
         # For storing DHT records
         self.local_hashtable = {}
+        # Save state of teardown
+        self.is_teardown = False
+        self.m_socket = None
 
     def register(self, m_socket):
         message = {
@@ -51,28 +55,28 @@ class Peer:
         if self.ring_id == 0 or df is None:
             df = pd.read_csv("storm_data_search_results.csv", parse_dates=["BEGIN_DATE"], dayfirst=False)
 
-        # Ensure BEGIN_DATE is in datetime format
-        df["BEGIN_DATE"] = pd.to_datetime(df["BEGIN_DATE"], format="%m/%d/%Y", errors="coerce")
+            # Ensure BEGIN_DATE is in datetime format
+            df["BEGIN_DATE"] = pd.to_datetime(df["BEGIN_DATE"], format="%m/%d/%Y", errors="coerce")
 
-        # Filter rows for the given year
-        df_filtered = df[df["BEGIN_DATE"].dt.year == year].copy()
-
+            # Filter rows for the given year
+            df_filtered = df[df["BEGIN_DATE"].dt.year == year].copy()  # Copy to avoid modifying original df
+        else:
+            df_filtered = df.copy()
         # List to store indices of rows to remove
         rows_to_remove = []
 
         for index, event in df_filtered.iterrows():
             event_id = int(event["EVENT_ID"])
-            pos = hash(event_id) % BIG_PRIME
-            id = pos % self.ring_size
-
-            if id == self.ring_id:
+            pos = event_id % BIG_PRIME
+            id_data = pos % self.ring_size
+            if id_data == self.ring_id:
                 self.local_hashtable[event_id] = event.to_dict()
-                rows_to_remove.append(index)
+                rows_to_remove.append(index)  # Mark row for removal
 
         # Remove processed rows
         df_filtered.drop(rows_to_remove, inplace=True)
 
-        return df_filtered
+        return df_filtered  # Return updated DataFrame
 
     def setup_dht(self, m_socket):
         size = int(input("Size: "))
@@ -103,7 +107,7 @@ class Peer:
 
                 for i in range(1, self.ring_size):
                     target = ring_peers[i]
-                    send_set_id_command(
+                    send_peer_set_id_command(
                         target_ip=target["ip"],
                         target_port=target["p_port"],
                         assigned_id=i,
@@ -120,7 +124,7 @@ class Peer:
 
                 print(f"current length of hash table: {len(self.local_hashtable)}")
 
-                send_peer_command(self.right_neighbor_ip, self.right_neighbor_port, remain_df, year)
+                send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, remain_df, year)
                 # Send dht-complete to manager
                 self.dht_complete(m_socket)
             else:
@@ -137,8 +141,7 @@ class Peer:
         response, _ = m_socket.recvfrom(1024)
         print(json.loads(response.decode()))
 
-
-    def listen_for_peers(self, p_socket):
+    def listen_for_peers(self, p_socket, m_socket):
         p_socket.listen(5)
         print(f"Listening for peer connections on port {self.p_port}")
 
@@ -151,7 +154,7 @@ class Peer:
                 # Start a new thread to handle this connection
                 handler_thread = threading.Thread(
                     target=self.handle_peer_connection,
-                    args=(connection, addr),
+                    args=(connection, addr, m_socket),
                     daemon=True
                 )
                 handler_thread.start()
@@ -161,7 +164,15 @@ class Peer:
 
         p_socket.close()
 
-    def handle_peer_connection(self, connection, addr):
+    def handle_peer_connection(self, connection, addr, m_socket):
+        """
+        Handle a connection with a peer. This function will run in a separate thread.
+        m_socket is the manager socket, create for convenience
+        :param connection:
+        :param addr:
+        :param m_socket:
+        :return:
+        """
         received_chunks = {}
         buffer = b""
 
@@ -235,7 +246,7 @@ class Peer:
                                 print(f"Current length of hash table: {len(self.local_hashtable)}")
 
                                 if len(df) > 0:
-                                    send_peer_command(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
+                                    send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
                                     print(f"{self.name} forwarding store to neighbor")
                                 else:
                                     print(f"{self.name} has no more data to forward")
@@ -244,6 +255,14 @@ class Peer:
                                 # Send acknowledgment
                                 ack = json.dumps({"status": "store-success"}).encode()
                                 connection.sendall(ack)
+
+                        elif msg.get("command") == "teardown-dht-peer":
+                            if self.ring_id != 0:
+                                self.teardown_dht()
+                            if self.ring_id == 0:
+                                print("Leader sent teardown command to all peers")
+                                self.teardown_complete(m_socket)
+
 
                     except json.JSONDecodeError:
                         # Safety check to avoid infinite buffer growth
@@ -266,6 +285,7 @@ class Peer:
             print(f"Connection with {addr} closed")
 
     def handle_user_commands(self, m_socket):
+        self.m_socket = m_socket
         while KEEP_RUNNING:
             command = input("\nEnter command (register/setup-dht/dht-complete/exit): ").strip()
             if command == "exit":
@@ -276,11 +296,50 @@ class Peer:
                 self.setup_dht(m_socket)
             elif command == "dht-complete":
                 self.dht_complete(m_socket)
+            elif command == "teardown-dht":
+                if self.send_manager_teardown(m_socket):
+                    self.teardown_dht()
             else:
                 print("Invalid command")
 
     def leave_dht(self):
         return
+
+    def teardown_dht(self):
+        self.local_hashtable = {}
+        send_peer_tear_down_command(self.right_neighbor_ip, self.right_neighbor_port)
+        print(f"{self.name} sent teardown command to neighbor at {self.right_neighbor_ip}:{self.right_neighbor_port}")
+
+    def send_manager_teardown(self, m_socket):
+        message = {
+            "command": "teardown-dht",
+            "peer": {
+                "name": self.name,
+                "ip": self.ip,
+                "m_port": self.m_port,
+                "p_port": self.p_port
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+        return json.loads(response.decode())['status'] == "SUCCESS"
+
+    def teardown_complete(self, m_socket):
+
+        message = {
+            "command": "teardown-complete",
+            "peer": {
+                "name": self.name,
+                "ip": self.ip,
+                "m_port": self.m_port,
+                "p_port": self.p_port
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
 
 def peer_main():
     parser = argparse.ArgumentParser(description="Start a peer in the DHT network")
@@ -304,7 +363,7 @@ def peer_main():
         p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         p_socket.bind((ip_addr, args.p_port))
 
-        listen_thread = threading.Thread(target=peer.listen_for_peers, args=(p_socket,), daemon=True)
+        listen_thread = threading.Thread(target=peer.listen_for_peers, args=(p_socket, m_socket), daemon=True)
         listen_thread.start()
 
         peer.handle_user_commands(m_socket)

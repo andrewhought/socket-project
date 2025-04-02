@@ -6,13 +6,14 @@ from time import sleep
 
 KEEP_RUNNING = True
 
+
 class DHT:
     def __init__(self):
         # List of all registered peers
         self.peers = []
         # Peers currently in the DHT
         self.dht_peers = []
-        self.leader = None
+        self.leader = None  # Leader peer is a dictionary contain field name, ...
         self.initialized = False
         self.n = None
         self.year = None
@@ -52,6 +53,7 @@ class DHT:
         for p in self.peers:
             if p["name"] == peer_name:
                 leader_peer = p
+                print(f"leader_peer: {leader_peer}")
                 break
 
         if not leader_peer:
@@ -71,12 +73,35 @@ class DHT:
             if p["name"] != leader_peer["name"] and count < size:
                 self.dht_peers.append(p)
                 count += 1
-                if count >= size:
-                    break
-
+            if count >= size:
+                break
+        self.peers = [p for p in self.peers if p not in self.dht_peers]
         print(f"DHT setup with size {size} for year {year}, leader: {leader_peer['name']}")
-        print(self.dht_peers)
+        print(f"dht peers: {self.dht_peers}")
+        print(f"peers: {self.peers}")
         return True, self.dht_peers
+
+    def teardown_dht(self, peer):
+        if not self.initialized:
+            return False, "DHT not initialized"
+        if peer['name'] != self.leader['name']:
+            return False, "Only the leader can tear down the DHT"
+
+        return True, "DHT torn down"
+
+    def teardown_complete(self, peer):
+        if not self.initialized:
+            return False, "DHT not initialized"
+        if peer['name'] != self.leader['name']:
+            return False, "Only the leader can tear down the DHT"
+
+        for p in self.dht_peers:
+            self.peers.append(p)
+        self.dht_peers.clear()
+
+        print(f"dht peers: {self.dht_peers}")
+        print(f"peers: {self.peers}")
+        return True, "DHT completely torn"
 
 
 def manager_main():
@@ -156,6 +181,22 @@ def manager_main():
 
             m_socket.sendto(json.dumps(response).encode(), addr)
 
+        elif command == "teardown-dht":
+            peer = message["peer"]
+            success, msg = dht.teardown_dht(peer)
+            if success:
+                response = {"status": "SUCCESS", "message": msg}
+            else:
+                response = {"status": "FAILURE", "message": msg}
+            m_socket.sendto(json.dumps(response).encode(), addr)
+        elif command == "teardown-complete":
+            peer = message["peer"]
+            success, msg = dht.teardown_complete(peer)
+            if success:
+                response = {"status": "SUCCESS", "message": msg}
+            else:
+                response = {"status": "FAILURE", "message": msg}
+            m_socket.sendto(json.dumps(response).encode(), addr)
         else:
             response = {"status": "FAILURE", "message": "Unknown command"}
             m_socket.sendto(json.dumps(response).encode(), addr)

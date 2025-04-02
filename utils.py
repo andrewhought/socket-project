@@ -5,7 +5,8 @@ import zlib
 
 MAX_PACKET_SIZE = 65536
 
-def send_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peers):
+
+def send_peer_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peers):
     # Create a TCP socket for peer-to-peer communication
     p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -26,7 +27,7 @@ def send_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peer
         p_socket.close()
 
 
-def send_peer_command(target_ip, target_port, data, year):
+def send_peer_storm_data(target_ip, target_port, data, year):
     # Create a TCP socket for peer-to-peer communication
     p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -63,4 +64,21 @@ def send_peer_command(target_ip, target_port, data, year):
         print(f"Error sending peer command: {e}")
     finally:
         p_socket.close()
-        
+
+
+def send_peer_tear_down_command(target_ip, target_port):
+    # Create a TCP socket for peer-to-peer communication
+    p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        p_socket.connect((target_ip, int(target_port)))
+
+        message = {
+            "command": "teardown-dht-peer",
+        }
+
+        p_socket.sendall(json.dumps(message).encode())
+        print(f"Sent teardown-dht-peer command to peer at {target_ip}:{target_port}")
+    except Exception as e:
+        print(f"Error sending set-id command: {e}")
+    finally:
+        p_socket.close()
