@@ -33,6 +33,9 @@ class Peer:
         # For storing DHT records
         self.local_hashtable = {}
 
+        self.ring_peers = []
+        self.last_query_dht_peer = None
+
     def register(self, m_socket):
         message = {
             "command": "register",
@@ -265,9 +268,156 @@ class Peer:
             connection.close()
             print(f"Connection with {addr} closed")
 
+    def handle_set_id(self, msg, connection):
+        assigned_id = msg["assigned_id"]
+        ring_size = msg["ring_size"]
+        ring_peers = msg["ring_peers"]
+
+        self.ring_id = assigned_id
+        self.ring_size = ring_size
+        self.ring_peers = ring_peers  # store the entire ring info
+
+        neighbor_index = (assigned_id + 1) % ring_size
+        neighbor = ring_peers[neighbor_index]
+        self.right_neighbor_ip = neighbor["ip"]
+        self.right_neighbor_port = neighbor["p_port"]
+
+        print(f"{self.name} set-id = {assigned_id}, neighbor is {neighbor}")
+        ack = json.dumps({"status": "id-set-success"}).encode()
+        connection.sendall(ack)
+
+    def handle_store(self, msg, connection, received_chunks):
+        chunk_id = msg["chunk_id"]
+        total_chunks = msg["total_chunks"]
+        compressed_data = bytes.fromhex(msg["data"])
+        received_chunks[chunk_id] = compressed_data
+
+        if len(received_chunks) == total_chunks:
+            full_data = b"".join(received_chunks[i] for i in sorted(received_chunks.keys()))
+            decompressed_data = zlib.decompress(full_data).decode()
+            df = pd.read_json(decompressed_data)
+            print(f"{self.name} reconstructed DataFrame with length: {len(df)}")
+
+            df = self.construct_local_hashtable(msg["year"], df)
+            print(f"Current length of hash table: {len(self.local_hashtable)}")
+
+        if len(df) > 0:
+            send_peer_command(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
+            print(f"{self.name} forwarding store to neighbor")
+        else:
+            print(f"{self.name} has no more data to forward")
+            received_chunks.clear()
+
+            ack = json.dumps({"status": "store-success"}).encode()
+            connection.sendall(ack)
+
+    def handle_find_event(self, msg):
+        original_sender = msg["original_sender"]
+        event_id = msg["event_id"]
+        correct_id = msg["correct_id"]
+        I_list = msg["I"]         # list of possible ring_ids to hop through
+        id_seq = msg["id_seq"]    # track visited ring_ids
+
+        # append our ring_id
+        if self.ring_id is not None:
+            id_seq.append(self.ring_id)
+
+        # If we are the correct node
+        if self.ring_id == correct_id:
+            if event_id in self.local_hashtable:
+                # success
+                record = self.local_hashtable[event_id]
+                self.send_find_event_result(
+                    original_sender["ip"],
+                    original_sender["port"],
+                    success=True,
+                    event_id=event_id,
+                    record=record,
+                    id_seq=id_seq
+                )
+        else:
+            # not found
+            self.send_find_event_result(
+            original_sender["ip"],
+            original_sender["port"],
+            success=False,
+            event_id=event_id,
+            reason=f"Event {event_id} not found in local table.",
+            id_seq=id_seq
+                )
+            return
+
+        # If we are NOT the correct node => hot potato forward
+        if not I_list:
+            # we have no one else to forward => fail
+            self.send_find_event_result(
+                original_sender["ip"],
+                original_sender["port"],
+                success=False,
+                event_id=event_id,
+                reason="Ran out of nodes to try (I empty).",
+                id_seq=id_seq
+            )
+            return
+
+        # pick random next hop from I_list
+        next_id = random.choice(I_list)
+        I_list.remove(next_id)
+
+        forward_msg = {
+            "command": "find-event",
+            "original_sender": original_sender,
+            "event_id": event_id,
+            "pos": msg["pos"],
+            "correct_id": correct_id,
+            "I": I_list,
+            "id_seq": id_seq
+        }
+        # lookup next peer's ip/port from self.ring_peers
+        if 0 <= next_id < len(self.ring_peers):
+            target_peer = self.ring_peers[next_id]
+            self.send_hot_potato_message(target_peer["ip"], target_peer["p_port"], forward_msg)
+        else:
+            # safety
+            self.send_find_event_result(
+                original_sender["ip"],
+                original_sender["port"],
+                success=False,
+                event_id=event_id,
+                reason=f"Invalid next_id={next_id}. Possibly ring_peers mismatch?",
+                id_seq=id_seq
+            )
+    def handle_find_event_result(self, msg):
+        success = msg["success"]
+        event_id = msg["event_id"]
+        id_seq = msg["id_seq"]
+
+        if success:
+            record = msg.get("record", {})
+            print(f"\n[find-event-result] SUCCESS: Found event {event_id} -> {record}")
+            print(f"Visited ring IDs: {id_seq}")
+        else:
+            reason = msg.get("reason", "Unknown")
+            print(f"\n[find-event-result] FAILURE: {reason}")
+            print(f"Visited ring IDs: {id_seq}")
+
+    def send_find_event_result(self, ip, port, success, event_id, id_seq, record=None, reason=None):
+        result_msg = {
+            "command": "find-event-result",
+            "success": success,
+            "event_id": event_id,
+            "id_seq": id_seq
+        }
+        if success:
+            result_msg["record"] = record
+        else:
+            result_msg["reason"] = reason
+
+        self.send_hot_potato_message(ip, port, result_msg)
+
     def handle_user_commands(self, m_socket):
         while KEEP_RUNNING:
-            command = input("\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/exit): ").strip()
+            command = input("\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/query-dht/deregiste/exit): ").strip()
             if command == "exit":
                 break
             elif command == "register":
@@ -280,6 +430,12 @@ class Peer:
                 self.leave_dht(m_socket)
             elif command == "join-dht":
                 self.join_dht(m_socket)
+            elif command == "query-dht":
+                self.query_dht(m_socket)
+            elif command == "deregister":
+                self.deregister(m_socket)
+            elif command == "find-event":
+                self.find_event_command()
             else:
                 print("Invalid command")
 
@@ -317,6 +473,78 @@ class Peer:
         response, _ = m_socket.recvfrom(1024)
         print(json.loads(response.decode()))
 
+    def query_dht(self, m_socket):
+        message = {
+            "command": "query-dht",
+            "peer": {
+                "name": self.name
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        resp_data, _ = m_socket.recvfrom(1024)
+        resp = json.loads(resp_data.decode())
+        print("Manager response:", resp)
+
+        if resp["status"] == "SUCCESS":
+            rp = resp["random_peer"]
+            self.last_query_dht_peer = rp
+            print(f"Random DHT peer => {rp}")
+        else:
+            print(f"Query-DHT failed: {resp.get('message', '')}")
+
+    def find_event_command(self):
+        if not self.last_query_dht_peer:
+            print("No random peer found. Please do 'query-dht' first.")
+            return
+
+        event_id = int(input("Enter event_id to search: "))
+        s = 2 * 100000 + 7  # or a real prime bigger than 2*records
+
+        pos = event_id % s
+        correct_id = pos % self.ring_size if self.ring_size else 0
+
+        # I = set of ring IDs except correct_id
+        all_ids = set(range(self.ring_size))
+        all_ids.discard(correct_id)
+
+        msg = {
+            "command": "find-event",
+            "original_sender": {
+                "ip": self.ip,
+                "port": self.p_port
+            },
+            "event_id": event_id,
+            "pos": pos,
+            "correct_id": correct_id,
+            "I": list(all_ids),  # list of node IDs we can pick from
+            "id_seq": []
+        }
+
+        # send to self.last_query_dht_peer
+        self.send_hot_potato_message(self.last_query_dht_peer["ip"],
+                                     self.last_query_dht_peer["p_port"],
+                                     msg)
+    def send_hot_potato_message(self, ip, port, message):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((ip, port))
+            sock.sendall(json.dumps(message).encode())
+            sock.close()
+        except Exception as e:
+            print(f"Error sending hot potato message: {e}")
+
+    def deregister(self, m_socket):
+        message = {
+            "command": "deregister",
+            "peer": {
+                "name": self.name
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        resp_data, _ = m_socket.recvfrom(1024)
+        resp = json.loads(resp_data.decode())
+        print("Manager response:", resp)
+        # If success, you might close this peer. Up to your design.
 
 def peer_main():
     parser = argparse.ArgumentParser(description="Start a peer in the DHT network")
