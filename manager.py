@@ -144,6 +144,48 @@ class DHT:
 
         return True, "SUCCESS"
 
+    def query_dht(self, peer_name):
+        if not self.initialized:
+            return False, "DHT is not initialized or not completed"
+            requesting_peer = None
+
+        for p in self.peers:
+                if p["name"] == peer_name:
+                    requesting_peer = p
+                    break
+        if not requesting_peer:
+            return False, "Peer not registered"
+
+        if not self.dht_peers:
+            return False, "No peers in DHT"
+
+        import random
+        random_peer = random.choice(self.dht_peers) # Return the random peer's 3-tuple
+        return True, {
+            "name": random_peer["name"],
+            "ip": random_peer["ip"],
+            "p_port": random_peer["p_port"]
+        }
+
+    def deregister_peer(self, peer_name):
+        dereg_peer = None   # Find the peer in self.peers
+        for p in self.peers:
+            if p["name"] == peer_name:
+                dereg_peer = p
+                break
+        if not dereg_peer:
+            return False, "Peer not registered"
+
+        if dereg_peer in self.dht_peers:    # Check if that peer is in dht_peers or is leader
+            return False, "Peer is currently in the DHT"
+
+        if self.leader and self.leader["name"] == peer_name:
+            return False, "Cannot deregister the leader"
+
+        self.peers.remove(dereg_peer)   # Remove from self.peers
+        print(f"Peer {peer_name} deregistered successfully.")
+        return True, "SUCCESS"
+
 def manager_main():
     parser = argparse.ArgumentParser(description="Start a DHT manager")
     parser.add_argument("--port", type=int, default=30000, help="Port for manager communication (default: 30000)")
@@ -238,6 +280,30 @@ def manager_main():
             new_leader = message["new_leader"]
             success, result = dht.dht_rebuilt(peer_name, new_leader)
             response = {"status": "SUCCESS" if success else "FAILURE", "message": result}
+            m_socket.sendto(json.dumps(response).encode(), addr)
+
+        elif command == "query-dht":
+            peer_name = message["peer"]["name"]
+            ok, res = dht.query_dht(peer_name)
+            if ok:
+                response = {
+                    "status": "SUCCESS",
+                    "random_peer": res
+                }
+            else:
+                response = {
+                    "status": "FAILURE",
+                    "message": res
+                }
+            m_socket.sendto(json.dumps(response).encode(), addr)
+
+        elif command == "deregister":
+            peer_name = message["peer"]["name"]
+            ok, res = dht.deregister_peer(peer_name)
+            if ok:
+                response = {"status": "SUCCESS", "message": res}
+            else:
+                response = {"status": "FAILURE", "message": res}
             m_socket.sendto(json.dumps(response).encode(), addr)
 
         elif command == "teardown-dht":
