@@ -287,7 +287,7 @@ class Peer:
     def handle_user_commands(self, m_socket):
         self.m_socket = m_socket
         while KEEP_RUNNING:
-            command = input("\nEnter command (register/setup-dht/dht-complete/exit): ").strip()
+            command = input("\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/exit): ").strip()
             if command == "exit":
                 break
             elif command == "register":
@@ -299,11 +299,47 @@ class Peer:
             elif command == "teardown-dht":
                 if self.send_manager_teardown(m_socket):
                     self.teardown_dht()
+            elif command == "leave-dht":
+                self.leave_dht(m_socket)
+            elif command == "join-dht":
+                self.join_dht(m_socket)
             else:
                 print("Invalid command")
 
-    def leave_dht(self):
-        return
+    def leave_dht(self, m_socket):
+        message = {
+            "command": "leave-dht",
+            "peer": {
+                "name": self.name
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
+    def join_dht(self, m_socket):
+        message = {
+            "command": "join-dht",
+            "peer": {
+                "name": self.name
+            }
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
+    def dht_rebuilt(self, m_socket, new_leader):
+        message = {
+            "command": "dht-rebuilt",
+            "peer": {
+                "name": self.name
+            },
+            "new_leader": new_leader
+        }
+        m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
+        response, _ = m_socket.recvfrom(1024)
+        print(json.loads(response.decode()))
+
 
     def teardown_dht(self):
         self.local_hashtable = {}
