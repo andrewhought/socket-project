@@ -12,6 +12,7 @@ from io import StringIO
 from time import sleep
 from typing import Any, Dict, List, Optional
 from utils import send_peer_command, send_set_id_command
+import numpy as np
 
 MANAGER_PORT: int = 30000
 # TODO: Testing at general.asu.edu
@@ -32,6 +33,27 @@ def next_prime(n):
     while not is_prime(num):
         num += 1
     return num
+
+def as_builtin(obj):
+    """
+    Recursively convert Pandas / NumPy scalars (Timestamp, int64, float64, NaT…)
+    into plain-Python (str | int | float | None) so the object can be JSON-encoded.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, (pd.Timestamp, pd.Timedelta)):
+        return obj.isoformat()                # "1950-01-03T11:00:00"
+    if isinstance(obj, (np.integer, np.int_)):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if pd.isna(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: as_builtin(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [as_builtin(v) for v in obj]
+    return obj
 
 class Peer:
     def __init__(self, name, ip, m_port, p_port):
@@ -72,29 +94,25 @@ class Peer:
         print(json.loads(m_socket.recvfrom(1024)[0].decode()))
 
     def construct_local_hashtable(self, year, df=None):
-        record = self.local_hashtable.get(event_id) if self.local_hashtable else None
-        if df is None:  # leader call
+        if df is None:
             df = pd.read_csv("storm_data_search_results.csv", na_values=["", " "])
             df["BEGIN_DATE"] = pd.to_datetime(df["BEGIN_DATE"], format="%m/%d/%Y", errors="coerce")
             df = df[df["BEGIN_DATE"].dt.year == year].copy()
-            print(f"{self.name} loaded {len(df)} events for {year}")
             self.s = next_prime(2 * len(df))
-            df["_s"] = self.s  # stash so followers know *s*
-        else:  # follower side – s was embedded in received df
-            self.s = int(df["_s"].iloc[0])
-
-        remaining: List[Dict[str, Any]] = []
+            df["_s"] = self.s              # piggy-back s for followers
+        else:
+            self.s = int(df["_s"].iloc[0]) 
+        remaining: list[dict[str, Any]] = []
         for _, row in df.iterrows():
-            event_id = int(row["EVENT_ID"])
-            pos = event_id % self.s
-            target_id = pos % self.ring_size  # type: ignore[arg-type]
-            if target_id == self.ring_id:
-                self.local_hashtable[event_id] = row.drop("_s").to_dict()
+            eid = int(row["EVENT_ID"])
+            slot = eid % self.s
+            peer_id = slot % self.ring_size
+            if peer_id == self.ring_id:
+                self.local_hashtable[eid] = row.drop("_s").to_dict()
             else:
                 remaining.append(row.to_dict())
-
-        print(f"{self.name} stored {len(self.local_hashtable)} events")
-        print(f"{self.name} first 5 ids: {list(self.local_hashtable.keys())[:5]}")
+        print(f"{self.name} stored {len(self.local_hashtable)} events,"
+              f" first 5 ids: {list(self.local_hashtable)[:5]}")
         return pd.DataFrame(remaining)
                 
     def hash_event_id(event_id, size):
@@ -149,6 +167,7 @@ class Peer:
             if ring_peers[0]["name"] == self.name:
                 print("Leader set, assigning IDs to other peers")
                 self.ring_id = 0
+                self.ring_peers   = ring_peers 
                 self.ring_size = len(ring_peers)
                 for i in range(1, self.ring_size):
                     target = ring_peers[i]
@@ -160,7 +179,7 @@ class Peer:
                         all_peers=ring_peers
                     )
                 self.right_neighbor_ip = ring_peers[1]["ip"]
-                self.right_neighbor_port = ring_peers[1]["p_port"]
+                self.right_neighbor_port = ring_peers[1]["p_port"]  
                 # Now the leader populates the DHT
                 sleep(5)
                 print(f"Leader populates DHT with data from year: {year}")
@@ -171,6 +190,7 @@ class Peer:
                 self.dht_complete(m_socket)
             else:
                 print("Not the leader")
+    
     def dht_complete(self, m_socket):
         message = {
             "command": "dht-complete",
@@ -304,30 +324,25 @@ class Peer:
         received_chunks.clear()
 
     def handle_find_event(self, msg: Dict[str, Any]) -> None:
-        sender = msg["original_sender"]
-        event_id = msg["event_id"]
-        correct_id = msg["correct_id"]
-        I: List[int] = msg["I"]
-        id_seq: List[int] = msg["id_seq"] + [self.ring_id]
-
-        # If we are the target id
-        if self.ring_id == correct_id: 
+        sender      = msg["original_sender"]          # who asked originally
+        event_id    = int(msg["event_id"])
+        correct_id  = msg["correct_id"]               # where the record lives
+        id_seq      = msg["id_seq"] + [self.ring_id]  # grow the trace
+        if self.ring_id == correct_id:
             record = self.local_hashtable.get(event_id)
-            if record:
-                self.send_find_event_result(sender, True, event_id, id_seq, record)
-            else:
-                self.send_find_event_result(sender, False, event_id, id_seq,
-                                             reason=f"Event {event_id} not in local table")
+            self.send_find_event_result(
+                sender, bool(record), event_id, id_seq,
+                record, reason=f"event {event_id} not here")
             return
-            
-        if not I:   # Not target – forward hot‑potato
-            self.send_find_event_result(sender, False, event_id, id_seq, reason="I empty")
+        unvisited = [i for i in range(self.ring_size) if i not in id_seq]
+        if not unvisited:
+            self.send_find_event_result(sender, False, event_id,
+                              id_seq, reason="no nodes left")
             return
-        next_id = random.choice(I)
-        I.remove(next_id)
-        nxt = self.ring_peers[next_id]
-        msg.update({"I": I, "id_seq": id_seq})
-        self._send_tcp(nxt["ip"], nxt["p_port"], msg)
+        next_id   = random.choice(unvisited)
+        next_peer = self.ring_peers[next_id]
+        msg.update({"id_seq": id_seq})      # keep growing the path
+        self._send_tcp(next_peer["ip"], next_peer["p_port"], msg)
 
     def send_response(sender, response):
         # Send response back to sender (name, ip, p_port)
@@ -352,8 +367,9 @@ class Peer:
         except Exception as e:
             print(f"{self.name} error processing message: {e}")
 
-    def send_find_event_result(self, sender: Dict[str, Any], success: bool, event_id: int,
-                               id_seq: List[int], record: Optional[Dict[str, Any]] = None,
+    def send_find_event_result(self, sender: Dict[str, Any], success: bool,
+                               event_id: int, id_seq: List[int],
+                               record: Optional[Dict[str, Any]] = None,
                                reason: str = "") -> None:
         res = {
             "command": "find-event-result",
@@ -361,18 +377,19 @@ class Peer:
             "event_id": event_id,
             "id_seq": id_seq,
         }
-        self._send_tcp(sender["ip"], sender["p_port"], res)
         if success:
-            res["record"] = record
+            res["record"] = as_builtin(record)     # ←── convert here
         else:
             res["reason"] = reason
+        self._send_tcp(sender["ip"], sender["p_port"], res)
 
     def handle_find_event_result(self, msg: Dict[str, Any]) -> None:
         eid = msg["event_id"]
         id_seq = msg["id_seq"]
         if msg["success"]:
+            record = msg["record"]
             print(f"\n[find-event-result] SUCCESS: Found event {eid}")
-            for k, v in msg["record"].items():
+            for k, v in record.items():
                 print(f"{k}: {v}")
             print("id-seq:", id_seq)
         else:
@@ -523,7 +540,6 @@ class Peer:
             "event_id": event_id,
             "pos": pos,
             "correct_id": correct_id,
-            "I": I,
             "id_seq": []
         }
         print(f"{self.name} sending find-event {event_id} to {self.last_query_dht_peer['name']} (pos={pos}, correct_id={correct_id})")
