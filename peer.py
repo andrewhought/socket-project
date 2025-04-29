@@ -2,6 +2,8 @@ import socket
 import json
 import threading
 import zlib
+import random
+
 import pandas as pd
 import argparse
 
@@ -55,15 +57,40 @@ class Peer:
         print(json.loads(response.decode()))
 
     def construct_local_hashtable(self, year, df=None):
-        if self.ring_id == 0 or df is None:
-            df = pd.read_csv("storm_data_search_results.csv", parse_dates=["BEGIN_DATE"], dayfirst=False)
 
-            # Ensure BEGIN_DATE is in datetime format
-            df["BEGIN_DATE"] = pd.to_datetime(df["BEGIN_DATE"], format="%m/%d/%Y", errors="coerce")
+        if self.ring_id == 0 or df is None:
+            df = pd.read_csv("storm_data_search_results.csv", dtype=str,
+                             index_col=False)  # Read as string for inspection
+            print(len(df), "rows in the original DataFrame")
+
+            # Print first few values of BEGIN_DATE before conversion
+            print("BEGIN_DATE before conversion:")
+            print(df["BEGIN_DATE"].head(10))
+
+            # Try converting BEGIN_DATE
+            df["BEGIN_DATE"] = pd.to_datetime(df["BEGIN_DATE"], errors="coerce")
+
+            # Check for NaT values
+            num_nat = df["BEGIN_DATE"].isna().sum()
+            print(f"Number of NaT values after conversion: {num_nat}")
+
+            # Print unique years in BEGIN_DATE after conversion
+            print("Unique years in BEGIN_DATE:", df["BEGIN_DATE"].dt.year.dropna().unique())
+
+            # Check if the provided year exists in data
+            if year not in df["BEGIN_DATE"].dt.year.dropna().unique():
+                print(f"Warning: No records found for year {year}")
 
             # Filter rows for the given year
-            df_filtered = df[df["BEGIN_DATE"].dt.year == year].copy()  # Copy to avoid modifying original df
+            df_filtered = df[df["BEGIN_DATE"].dt.year == year].copy()
+
+            # Print number of rows after filtering
+            print(f"Filtered {len(df_filtered)} rows for year {year}")
+
+            # Show some filtered data
+            print(df_filtered.head(10))  # Copy to avoid modifying original df
         else:
+            print(f"df provided, using the one in the class, len = {len(df)}")
             df_filtered = df.copy()
         # List to store indices of rows to remove
         rows_to_remove = []
@@ -249,7 +276,8 @@ class Peer:
                                 print(f"Current length of hash table: {len(self.local_hashtable)}")
 
                                 if len(df) > 0:
-                                    send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
+                                    send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df,
+                                                         msg["year"])
                                     print(f"{self.name} forwarding store to neighbor")
                                 else:
                                     print(f"{self.name} has no more data to forward")
@@ -321,7 +349,7 @@ class Peer:
             print(f"Current length of hash table: {len(self.local_hashtable)}")
 
         if len(df) > 0:
-            send_peer_command(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
+            send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df, msg["year"])
             print(f"{self.name} forwarding store to neighbor")
         else:
             print(f"{self.name} has no more data to forward")
@@ -334,8 +362,8 @@ class Peer:
         original_sender = msg["original_sender"]
         event_id = msg["event_id"]
         correct_id = msg["correct_id"]
-        I_list = msg["I"]         # list of possible ring_ids to hop through
-        id_seq = msg["id_seq"]    # track visited ring_ids
+        I_list = msg["I"]  # list of possible ring_ids to hop through
+        id_seq = msg["id_seq"]  # track visited ring_ids
 
         # append our ring_id
         if self.ring_id is not None:
@@ -357,13 +385,13 @@ class Peer:
         else:
             # not found
             self.send_find_event_result(
-            original_sender["ip"],
-            original_sender["port"],
-            success=False,
-            event_id=event_id,
-            reason=f"Event {event_id} not found in local table.",
-            id_seq=id_seq
-                )
+                original_sender["ip"],
+                original_sender["port"],
+                success=False,
+                event_id=event_id,
+                reason=f"Event {event_id} not found in local table.",
+                id_seq=id_seq
+            )
             return
 
         # If we are NOT the correct node => hot potato forward
@@ -406,6 +434,7 @@ class Peer:
                 reason=f"Invalid next_id={next_id}. Possibly ring_peers mismatch?",
                 id_seq=id_seq
             )
+
     def handle_find_event_result(self, msg):
         success = msg["success"]
         event_id = msg["event_id"]
@@ -437,7 +466,8 @@ class Peer:
     def handle_user_commands(self, m_socket):
         self.m_socket = m_socket
         while KEEP_RUNNING:
-            command = input("\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/query-dht/deregiste/exit): ").strip()
+            command = input(
+                "\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/query-dht/deregiste/exit): ").strip()
             if command == "exit":
                 break
             elif command == "register":
@@ -459,6 +489,8 @@ class Peer:
                 self.deregister(m_socket)
             elif command == "find-event":
                 self.find_event_command()
+            elif command == "dht-rebuilt":
+                self.dht_rebuilt(m_socket, input("Enter new leader name: "))
             else:
                 print("Invalid command")
 
@@ -547,6 +579,7 @@ class Peer:
         self.send_hot_potato_message(self.last_query_dht_peer["ip"],
                                      self.last_query_dht_peer["p_port"],
                                      msg)
+
     def send_hot_potato_message(self, ip, port, message):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

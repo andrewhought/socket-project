@@ -6,6 +6,7 @@ from time import sleep
 
 KEEP_RUNNING = True
 
+
 class DHT:
     def __init__(self):
         # List of all registered peers
@@ -100,6 +101,9 @@ class DHT:
 
         print(f"dht peers: {self.dht_peers}")
         print(f"peers: {self.peers}")
+
+        self.initialized = False
+        self.leader = None
         return True, "DHT completely torn"
 
     def leave_dht(self, peer_name):
@@ -111,14 +115,16 @@ class DHT:
 
         print(f"Peer {peer_name} is leaving the DHT")
         # Simulate teardown and renumbering of the DHT
-        self.dht_peers.remove(next(p for p in self.dht_peers if p["name"] == peer_name))
+        peer_remove = self.dht_peers.remove(next(p for p in self.dht_peers if p["name"] == peer_name))
         self.n -= 1
 
         if self.dht_peers:
             new_leader = self.dht_peers[0]
             self.leader = new_leader
 
-        return True, new_leader["name"]
+        self.peers.append(peer_remove)
+
+        return True, f"{peer_name} successfully left the DHT. New leader is {self.leader['name'] if self.leader else 'None'}"
 
     def join_dht(self, peer_name):
         if not self.initialized:
@@ -142,6 +148,10 @@ class DHT:
         # Update the leader if necessary
         self.leader = next(p for p in self.dht_peers if p["name"] == new_leader)
 
+        print(f"Peer {peer_name} has rebuilt the DHT. New leader is {self.leader['name']}")
+        print(f"current free peers: {self.peers}")
+        print(f"current dht peers: {self.dht_peers}")
+
         return True, "SUCCESS"
 
     def query_dht(self, peer_name):
@@ -150,9 +160,9 @@ class DHT:
             requesting_peer = None
 
         for p in self.peers:
-                if p["name"] == peer_name:
-                    requesting_peer = p
-                    break
+            if p["name"] == peer_name:
+                requesting_peer = p
+                break
         if not requesting_peer:
             return False, "Peer not registered"
 
@@ -160,7 +170,7 @@ class DHT:
             return False, "No peers in DHT"
 
         import random
-        random_peer = random.choice(self.dht_peers) # Return the random peer's 3-tuple
+        random_peer = random.choice(self.dht_peers)  # Return the random peer's 3-tuple
         return True, {
             "name": random_peer["name"],
             "ip": random_peer["ip"],
@@ -168,7 +178,7 @@ class DHT:
         }
 
     def deregister_peer(self, peer_name):
-        dereg_peer = None   # Find the peer in self.peers
+        dereg_peer = None  # Find the peer in self.peers
         for p in self.peers:
             if p["name"] == peer_name:
                 dereg_peer = p
@@ -176,15 +186,16 @@ class DHT:
         if not dereg_peer:
             return False, "Peer not registered"
 
-        if dereg_peer in self.dht_peers:    # Check if that peer is in dht_peers or is leader
+        if dereg_peer in self.dht_peers:  # Check if that peer is in dht_peers or is leader
             return False, "Peer is currently in the DHT"
 
         if self.leader and self.leader["name"] == peer_name:
             return False, "Cannot deregister the leader"
 
-        self.peers.remove(dereg_peer)   # Remove from self.peers
+        self.peers.remove(dereg_peer)  # Remove from self.peers
         print(f"Peer {peer_name} deregistered successfully.")
         return True, "SUCCESS"
+
 
 def manager_main():
     parser = argparse.ArgumentParser(description="Start a DHT manager")
@@ -206,11 +217,26 @@ def manager_main():
 
     print(f"Manager started at {ip_addr}:{port}")
 
+    receive_msg = True
+
     while KEEP_RUNNING:
         data, addr = m_socket.recvfrom(1024)
         message = json.loads(data.decode())
         print(message)
         command = message["command"]
+
+        if not receive_msg:
+            if command != "dht-rebuilt":
+                print("not receiving messages anymore except dht-rebuilt")
+                continue
+            else:
+                peer_name = message["peer"]["name"]
+                new_leader = message["new_leader"]
+                success, result = dht.dht_rebuilt(peer_name, new_leader)
+                response = {"status": "SUCCESS" if success else "FAILURE", "message": result}
+                m_socket.sendto(json.dumps(response).encode(), addr)
+                receive_msg = True
+                print("receiving messages again except dht-rebuilt")
 
         if command == "register":
             peer = message["peer"]
@@ -268,19 +294,16 @@ def manager_main():
             success, result = dht.leave_dht(peer_name)
             response = {"status": "SUCCESS" if success else "FAILURE", "message": result}
             m_socket.sendto(json.dumps(response).encode(), addr)
+            receive_msg = False
+            print("not receiving messages anymore except dht-rebuilt")
 
         elif command == "join-dht":
             peer_name = message["peer"]["name"]
             success, result = dht.join_dht(peer_name)
             response = {"status": "SUCCESS" if success else "FAILURE", "message": result}
             m_socket.sendto(json.dumps(response).encode(), addr)
-
-        elif command == "dht-rebuilt":
-            peer_name = message["peer"]["name"]
-            new_leader = message["new_leader"]
-            success, result = dht.dht_rebuilt(peer_name, new_leader)
-            response = {"status": "SUCCESS" if success else "FAILURE", "message": result}
-            m_socket.sendto(json.dumps(response).encode(), addr)
+            receive_msg = False
+            print("not receiving messages anymore except dht-rebuilt")
 
         elif command == "query-dht":
             peer_name = message["peer"]["name"]
@@ -325,6 +348,7 @@ def manager_main():
         else:
             response = {"status": "FAILURE", "message": "Unknown command"}
             m_socket.sendto(json.dumps(response).encode(), addr)
+
 
 if __name__ == "__main__":
     try:
