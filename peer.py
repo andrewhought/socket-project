@@ -33,14 +33,19 @@ class Peer:
         self.ring_size = None
         self.right_neighbor_ip = None
         self.right_neighbor_port = None
-        # For storing DHT records
+        # For storing DHT records. Key is event ID, value is the event data store in storm_data_search_results.csv
         self.local_hashtable = {}
-        # Save state of teardown
+        # Save state of teardown. True if teardown is in progress
         self.is_teardown = False
+        # Socket for manager communication
         self.m_socket = None
 
+        # List of peers in the ring, having name and id and port
         self.ring_peers = []
+
+        # Peer that manager returns for query-dht
         self.last_query_dht_peer = None
+        # For storing the response of find-event comman
         self.find_event_response = None
 
     def register(self, m_socket):
@@ -204,6 +209,8 @@ class Peer:
         :param m_socket:
         :return:
         """
+
+        # This part is due to large data sent via TCP
         received_chunks = {}
         buffer = b""
 
@@ -318,12 +325,12 @@ class Peer:
                                     # Found the event, send success response directly to sender
                                     print(f"data to sent: {self.local_hashtable[event_id]}")
                                     response = {
-                                        "command": "find-event-response",  # Use a different command to distinguish
-                                        "status": "SUCCESS",  # or "FAILURE"
-                                        "record": self.local_hashtable[event_id],  # Include only for SUCCESS
+                                        "command": "find-event-response",
+                                        "status": "SUCCESS",
+                                        "record": self.local_hashtable[event_id],
                                         "id_seq": id_seq
                                     }
-                                    # Connect to the original sender
+                                    # Sent result to sender
                                     sender_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                                     try:
                                         sender_socket.connect((sender["ip"], sender["port"]))
@@ -337,6 +344,7 @@ class Peer:
                                     self.forward_find_event(event_id, sender, id_seq, id_data)
                             else:
                                 # This is not the right node, forward using hot potato routing
+                                print(f"Event {event_id} not found in local hashtable, forwarding to next peer")
                                 self.forward_find_event(event_id, sender, id_seq, id_data)
 
                         elif msg.get("command") == "find-event-response":
@@ -389,7 +397,6 @@ class Peer:
                 sender_socket.close()
             return
 
-        # Select a random next peer
         next_id = random.choice(remaining_ids)
 
         # Find the peer info with this ID
@@ -399,13 +406,11 @@ class Peer:
                 next_peer = peer
                 break
 
-        # If we don't have peer info, use right neighbor
-        if not next_peer:
-            next_ip = self.right_neighbor_ip
-            next_port = self.right_neighbor_port
-        else:
-            next_ip = next_peer["ip"]
-            next_port = next_peer["p_port"]
+        if next_peer is None:
+            raise ValueError(f"No peer found with ID {next_id}")
+
+        next_ip = next_peer["ip"]
+        next_port = next_peer["p_port"]
 
         # Forward the find-event message
         forward_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -487,9 +492,6 @@ class Peer:
             find_socket.sendall(json.dumps(message).encode())
             print(f"Find-event message sent, waiting for response...")
 
-            # IMPORTANT: The response will come through the peer-to-peer listening socket
-            # that's already running in another thread, not through this connection
-
             # Set a timeout for the search
             timeout = 10  # seconds
             start_time = time()
@@ -508,19 +510,19 @@ class Peer:
                         print("\nEvent details:")
                         for field, value in response.get("record", {}).items():
                             print(f"{field}: {value}")
-                        print("\nNodes probed:", " → ".join(map(str, response.get("id_seq", []))))
+                        print("\nNodes probed:", " --→ ".join(map(str, response.get("id_seq", []))))
                     elif response.get("status") == "FAILURE":
                         print(f"Storm event {event_id} not found in the DHT.")
                     break
 
-                # Sleep briefly to avoid hogging CPU
-                sleep(0.1)
+                # Sleep
+                sleep(0.22)
 
-            else:  # This executes if the while loop completes without breaking
-                print(f"Search timed out after {timeout} seconds.")
+            if time() - start_time >= timeout:
+                print("Timeout waiting for response. No peer responded.")
 
         except Exception as e:
-            print(f"Error in find_event_command: {e}")
+            print(f"Error find event: {e}")
         finally:
             find_socket.close()
 
@@ -606,6 +608,7 @@ class Peer:
         # If success, you might close this peer. Up to your design.
 
     def teardown_dht(self):
+        # empty the local hashtable and send teardown command to the right neighbor
         self.local_hashtable = {}
         send_peer_tear_down_command(self.right_neighbor_ip, self.right_neighbor_port)
         print(f"{self.name} sent teardown command to neighbor at {self.right_neighbor_ip}:{self.right_neighbor_port}")
