@@ -6,7 +6,7 @@ import zlib
 MAX_PACKET_SIZE = 65536
 
 
-def send_peer_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peers):
+def send_peer_set_id_command(target_ip, target_port, assigned_id, ring_size, all_peers, year):
     # Create a TCP socket for peer-to-peer communication
     p_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -16,7 +16,8 @@ def send_peer_set_id_command(target_ip, target_port, assigned_id, ring_size, all
             "command": "set-id",
             "assigned_id": assigned_id,
             "ring_size": ring_size,
-            "ring_peers": all_peers
+            "ring_peers": all_peers,
+            "year": year,
         }
 
         p_socket.sendall(json.dumps(message).encode())
