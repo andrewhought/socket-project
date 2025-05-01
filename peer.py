@@ -135,6 +135,7 @@ class Peer:
 
         if resp_dict.get("result"):
             ring_peers = resp_dict["ring_peers"]
+            self.ring_peers = ring_peers
             if ring_peers[0]["name"] == self.name:
                 print("Leader set, assigning IDs to other peers")
 
@@ -257,6 +258,7 @@ class Peer:
                             assigned_id = msg["assigned_id"]
                             ring_size = msg["ring_size"]
                             ring_peers = msg["ring_peers"]
+                            self.ring_peers = ring_peers
                             self.ring_id = assigned_id
                             self.ring_size = ring_size
                             neighbor_index = (assigned_id + 1) % ring_size
@@ -323,6 +325,15 @@ class Peer:
                                 if event_id in self.local_hashtable.keys():
                                     print(f"Found event {event_id} in local hashtable, sending to {sender['name']}")
                                     # Found the event, send success response directly to sender
+                                    # Here fix nan and pd.Timestamp (cannot json serialized)
+                                    record_copy = self.local_hashtable[event_id].copy()
+                                    if isinstance(record_copy['BEGIN_DATE'],pd.Timestamp):
+                                        record_copy['BEGIN_DATE'] = record_copy['BEGIN_DATE'].isoformat()
+
+                                    for key, value in record_copy.items():
+                                        if pd.isna(value):
+                                            record_copy[key] = None
+
                                     print(f"data to sent: {self.local_hashtable[event_id]}")
                                     response = {
                                         "command": "find-event-response",
@@ -397,14 +408,10 @@ class Peer:
                 sender_socket.close()
             return
 
-        next_id = random.choice(remaining_ids)
+        next_id = int(random.choice(remaining_ids))
 
         # Find the peer info with this ID
-        next_peer = None
-        for peer in self.ring_peers:
-            if peer.get("ring_id") == next_id:
-                next_peer = peer
-                break
+        next_peer = self.ring_peers[next_id]
 
         if next_peer is None:
             raise ValueError(f"No peer found with ID {next_id}")
