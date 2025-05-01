@@ -50,7 +50,7 @@ class Peer:
 
         self.year = None
 
-    def register(self,):
+    def register(self, ):
         message = {
             "command": "register",
             "peer": {
@@ -97,6 +97,8 @@ class Peer:
             print(df_filtered.head(10))  # Copy to avoid modifying original df
         else:
             print(f"df provided, using the one in the class, len = {len(df)}")
+            print(f"delete local hashtable")
+            self.local_hashtable = {}
             df_filtered = df.copy()
         # List to store indices of rows to remove
         rows_to_remove = []
@@ -181,7 +183,6 @@ class Peer:
         }
         self.m_socket.sendto(json.dumps(message).encode(), (MANAGER_IP_ADDR, MANAGER_PORT))
 
-
     def dht_complete(self):
         message = {
             "command": "dht-complete",
@@ -227,6 +228,8 @@ class Peer:
                 elif msg.get("command") == "setup-dht" or msg.get("command") == "dht-rebuilt":
                     if msg.get("result"):
                         # Call finish_setup_dht to assign IDs and populate DHT
+                        print(f"Processing setup-dht from manager: {msg} with year {msg['year']}")
+                        self.year = msg['year']
                         self.finish_setup_dht(msg)
                     else:
                         print("Error in setup_dht: ", msg.get("message"))
@@ -243,7 +246,11 @@ class Peer:
 
                 elif msg.get("command") == "teardown-dht":
                     print("Received teardown-complete from manager")
-                    self.teardown_dht()
+                    if msg.get("status") == "SUCCESS":
+                        # Call teardown_complete to clean up
+                        self.teardown_dht()
+                    else:
+                        print("Error in teardown_dht: ", msg.get("message"))
 
             except Exception as e:
                 print(f"Error receiving manager message: {e}")
@@ -275,7 +282,7 @@ class Peer:
                     try:
                         # Try to parse a complete JSON message
                         message_str = buffer.decode()
-                        print(f"Buffer length: {len(buffer)} bytes, message_str: {message_str[:50]}... (truncated)")
+                        # print(f"Buffer length: {len(buffer)} bytes, message_str: {message_str[:50]}... (truncated)")
 
                         # Try to find the position of the first valid JSON object
                         brace_count = 0
@@ -335,6 +342,8 @@ class Peer:
                                 print(f"Current length of hash table: {len(self.local_hashtable)}")
 
                                 if len(df) > 0:
+                                    print(
+                                        f"{self.name} sending data to neighbor {self.right_neighbor_ip}, size: {len(df)}")
                                     send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df,
                                                          msg["year"])
                                     print(f"{self.name} forwarding store to neighbor")
@@ -368,40 +377,40 @@ class Peer:
                             id_seq.append(self.ring_id)
 
                             # If this is the node that should have the event
-                            if id_data == self.ring_id:
+                            if id_data == self.ring_id and event_id in self.local_hashtable.keys():
                                 # Check if event exists in local hash table
                                 # print(self.local_hashtable)
-                                if event_id in self.local_hashtable.keys():
-                                    print(f"Found event {event_id} in local hashtable, sending to {sender['name']}")
-                                    # Found the event, send success response directly to sender
-                                    # Here fix nan and pd.Timestamp (cannot json serialized)
-                                    record_copy = self.local_hashtable[event_id].copy()
-                                    if isinstance(record_copy['BEGIN_DATE'],pd.Timestamp):
-                                        record_copy['BEGIN_DATE'] = record_copy['BEGIN_DATE'].isoformat()
 
-                                    for key, value in record_copy.items():
-                                        if pd.isna(value):
-                                            record_copy[key] = None
+                                print(f"Found event {event_id} in local hashtable, sending to {sender['name']}")
+                                # Found the event, send success response directly to sender
+                                # Here fix nan and pd.Timestamp (cannot json serialized)
+                                record_copy = self.local_hashtable[event_id].copy()
+                                if isinstance(record_copy['BEGIN_DATE'], pd.Timestamp):
+                                    record_copy['BEGIN_DATE'] = record_copy['BEGIN_DATE'].isoformat()
 
-                                    print(f"data to sent: {self.local_hashtable[event_id]}")
-                                    response = {
-                                        "command": "find-event-response",
-                                        "status": "SUCCESS",
-                                        "record": self.local_hashtable[event_id],
-                                        "id_seq": id_seq
-                                    }
-                                    # Sent result to sender
-                                    sender_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                    try:
-                                        sender_socket.connect((sender["ip"], sender["port"]))
-                                        print(f"trying to send to {sender['ip']}:{sender['port']}")
-                                        sender_socket.sendall(json.dumps(response).encode())
-                                    finally:
-                                        sender_socket.close()
-                                else:
-                                    print(f"Event {event_id} not found in local hashtable, forwarding to next peer")
-                                    # This node should have it but doesn't, start hot potato routing
-                                    self.forward_find_event(event_id, sender, id_seq, id_data)
+                                for key, value in record_copy.items():
+                                    if pd.isna(value):
+                                        record_copy[key] = None
+
+                                # print(f"data to sent: {self.local_hashtable[event_id]}")
+                                response = {
+                                    "command": "find-event-response",
+                                    "status": "SUCCESS",
+                                    "record": self.local_hashtable[event_id],
+                                    "id_seq": id_seq
+                                }
+                                # Sent result to sender
+                                sender_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                try:
+                                    sender_socket.connect((sender["ip"], sender["port"]))
+                                    print(f"trying to send to {sender['ip']}:{sender['port']}")
+                                    sender_socket.sendall(json.dumps(response).encode())
+                                finally:
+                                    sender_socket.close()
+                                # else:
+                                #     print(f"Event {event_id} not found in local hashtable, forwarding to next peer")
+                                #     # This node should have it but doesn't, start hot potato routing
+                                #     self.forward_find_event(event_id, sender, id_seq, id_data)
                             else:
                                 # This is not the right node, forward using hot potato routing
                                 print(f"Event {event_id} not found in local hashtable, forwarding to next peer")
@@ -410,7 +419,11 @@ class Peer:
                         elif msg.get("command") == "find-event-response":
                             print(f"Received find-event response: {msg['status']}")
                             # Store the response for the waiting find_event_command
-                            self.find_event_response = msg
+                            if msg['status']:
+                                self.find_event_response = msg
+                            else:
+                                # If the event was not found, print the message
+                                print(f"Find-event failed: {msg.get('message')}")
 
                     except json.JSONDecodeError:
                         # Safety check to avoid infinite buffer growth
@@ -440,14 +453,17 @@ class Peer:
         all_ids = set(range(self.ring_size))
         remaining_ids = list(all_ids - set(id_seq))
 
-        print(f"Remaining IDs: {remaining_ids}, current ID: {current_id}, sender ID: {sender['name']}")
+        print(f"Remaining IDs: {remaining_ids}, data ID: {current_id}, "
+              f"sender ID: {sender['name']}, current ID: {self.ring_id}")
 
         # If we've checked all nodes and still haven't found it
         if not remaining_ids:
+
             # Send failure response directly to the sender
             response = {
                 "status": "FAILURE",
-                "id_seq": id_seq
+                "id_seq": id_seq,
+                "command": "find-event-response",
             }
             sender_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
@@ -455,6 +471,7 @@ class Peer:
                 sender_socket.sendall(json.dumps(response).encode())
             finally:
                 sender_socket.close()
+                print(f"All nodes checked, sending failure response to {sender['name']}")
             return
 
         next_id = int(random.choice(remaining_ids))
@@ -464,6 +481,8 @@ class Peer:
 
         if next_peer is None:
             raise ValueError(f"No peer found with ID {next_id}")
+        else:
+            print(f"Forwarding to next peer {next_peer['name']}")
 
         next_ip = next_peer["ip"]
         next_port = next_peer["p_port"]
@@ -532,8 +551,6 @@ class Peer:
                 },
                 "id_seq": []  # Initialize empty ID sequence
             }
-
-            find_socket.sendall(json.dumps(message).encode())
 
             print(f"Sending find-event for event ID {event_id} to {target_ip}:{target_port}")
             find_socket.sendall(json.dumps(message).encode())
@@ -641,9 +658,15 @@ class Peer:
 
     def teardown_dht(self):
         # empty the local hashtable and send teardown command to the right neighbor
-        self.local_hashtable = {}
         send_peer_tear_down_command(self.right_neighbor_ip, self.right_neighbor_port)
         print(f"{self.name} sent teardown command to neighbor at {self.right_neighbor_ip}:{self.right_neighbor_port}")
+        sleep(0.5)
+        self.local_hashtable = {}
+        self.year = None
+        self.ring_size = None
+        self.right_neighbor_ip = None
+        self.ring_id = None
+        self.ring_peers = []
 
     def send_manager_teardown(self):
         message = {
@@ -720,6 +743,8 @@ def peer_main():
     finally:
         KEEP_RUNNING = False
         print("Shutting down peer")
+        listen_thread.join(1)
+        manager_thread.join(1)
         if m_socket:
             m_socket.close()
         if p_socket:

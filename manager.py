@@ -90,6 +90,9 @@ class DHT:
         if peer['name'] != self.leader['name']:
             return False, "Only the leader can tear down the DHT"
 
+        self.peers.extend(self.dht_peers)
+        self.dht_peers.clear()
+
         return True, "DHT torn down"
 
     def teardown_complete(self, peer):
@@ -211,6 +214,7 @@ class DHT:
 
         self.peers.remove(dereg_peer)  # Remove from self.peers
         print(f"Peer {peer_name} deregistered successfully.")
+        print(f"current free peers: {self.peers}, current dht peers: {self.dht_peers}")
         return True, "SUCCESS"
 
 
@@ -266,7 +270,8 @@ def manager_main():
                     response = {"command": command,
                                 "status": "SUCCESS",
                                 "result": True,
-                                "ring_peers": ring_peers
+                                "ring_peers": ring_peers,
+                                "year": dht.year,
                                 }
 
                     leader_info = next((peer for peer in dht.dht_peers if peer["name"] == new_leader), None)
@@ -313,7 +318,8 @@ def manager_main():
                 response = {"command": command,
                             "status": "SUCCESS",
                             "result": True,
-                            "ring_peers": ring_peers
+                            "ring_peers": ring_peers,
+                            "year": dht.year,
                             }
             else:
                 response = {"command": command,
