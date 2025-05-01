@@ -157,7 +157,8 @@ class DHT:
     def query_dht(self, peer_name):
         if not self.initialized:
             return False, "DHT is not initialized or not completed"
-            requesting_peer = None
+        
+        requesting_peer = None
 
         for p in self.peers:
             if p["name"] == peer_name:
