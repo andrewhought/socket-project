@@ -343,7 +343,7 @@ class Peer:
 
                                 if len(df) > 0:
                                     print(
-                                        f"{self.name} sending data to neighbor {self.right_neighbor_ip}, size: {len(df)}")
+                                        f"{self.name} sending data to neighbor {self.right_neighbor_port}, size: {len(df)}")
                                     send_peer_storm_data(self.right_neighbor_ip, self.right_neighbor_port, df,
                                                          msg["year"])
                                     print(f"{self.name} forwarding store to neighbor")
