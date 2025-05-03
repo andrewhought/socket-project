@@ -12,7 +12,7 @@ from utils import send_peer_set_id_command, send_peer_storm_data, send_peer_tear
 
 MANAGER_PORT: int = 30000
 # TODO: Testing at general.asu.edu
-MANAGER_IP_ADDR: str = "127.0.0.1"
+MANAGER_IP_ADDR: str = "172.18.7.3"
 BIG_PRIME = 7017224779
 
 # Flag to control while loops
@@ -49,6 +49,7 @@ class Peer:
         self.find_event_response = None
 
         self.year = None
+        self.run_flag = True
 
     def register(self, ):
         message = {
@@ -206,6 +207,7 @@ class Peer:
                 handler_thread = threading.Thread(
                     target=self.handle_peer_connection,
                     args=(connection, addr),
+                    daemon=True
                 )
                 handler_thread.start()
 
@@ -243,6 +245,7 @@ class Peer:
                         self.find_event_command()
                     else:
                         print("Error in query_dht: ", msg.get("message"))
+                    self.run_flag = True
 
                 elif msg.get("command") == "teardown-dht":
                     print("Received teardown-complete from manager")
@@ -507,6 +510,7 @@ class Peer:
         """
         Send query-dht command to manager and get a peer from the DHT
         """
+        self.run_flag = False
         message = {
             "command": "query-dht",
             "peer": {
@@ -593,6 +597,8 @@ class Peer:
     def handle_user_commands(self, m_socket):
         self.m_socket = m_socket
         while KEEP_RUNNING:
+            if not self.run_flag:
+                continue
             command = input(
                 "\nEnter command (register/setup-dht/dht-complete/leave-dht/join-dht/query-dht/deregister/exit): ").strip()
             if command == "exit":
@@ -605,7 +611,6 @@ class Peer:
                 self.dht_complete()
             elif command == "teardown-dht":
                 self.send_manager_teardown()
-
             elif command == "leave-dht":
                 self.leave_dht(m_socket)
             elif command == "join-dht":
